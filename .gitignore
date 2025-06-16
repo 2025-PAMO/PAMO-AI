@@ -1,19 +1,59 @@
+# 프로젝트 디렉터리
 fastapiserver/
 pamo-test/
 
 # Python
 __pycache__/
 *.pyc
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
 
-# Virtual Environment
+# 가상환경
 venv/
 env/
-fastapiserver/
+
+# FastAPI / Uvicorn
+*.db
+instance/
+*.sqlite3
 
 # IDE
 .idea/
 .vscode/
+*.code-workspace
 
-# OS
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Env / Secrets
+.env
+.env.*
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 생성된 음악 파일
+*.wav
+*.mp3
+*.ogg
+output/
+generated_*.*
+generated_music_*.*

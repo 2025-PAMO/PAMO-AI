@@ -2,24 +2,42 @@ import cv2
 import numpy as np
 import asyncio
 import json
-from fastapi import FastAPI, WebSocket
+import logging
+from fastapi import FastAPI, WebSocket, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
 from motion_detector import MotionDetector
-# from motion_detector_movenet import MoveNetDetector
+from basicmusic_generate.generator import generate_music_file
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
-movenet_detector = MotionDetector()
 
-
+# CORS 설정 통합
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 또는 ["http://localhost:3000"] 로 조정 가능
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ✅ 음악 생성 API
+@app.post("/generate-music")
+async def generate_music(
+    file: UploadFile = File(...),
+    prompt: str = Form(...)
+):
+    try:
+        output_path = await generate_music_file(file, prompt)
+        return FileResponse(output_path, media_type="audio/wav", filename="generated_music.wav")
+    except Exception as e:
+        logger.error("API 처리 실패: %s", e)
+        return {"error": "음악 생성 실패"}
+
+# ✅ 모션 인식 WebSocket
 @app.websocket("/motion-detect")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -43,7 +61,6 @@ async def websocket_endpoint(websocket: WebSocket):
             if frame is None:
                 continue
 
-            # 분석
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             motions = detector.detect(frame_rgb)
 
