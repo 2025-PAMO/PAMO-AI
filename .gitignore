@@ -1,0 +1,50 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# FastAPI / Uvicorn
+*.db
+instance/
+*.sqlite3
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Jupyter Notebooks (있을 경우)
+.ipynb_checkpoints
+
+# Env / Secrets
+.env
+.env.*
+
+# OS Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Output or generated media
+*.wav
+*.mp3
+*.ogg
+output/
+generated_*.*
+generated_music_*.*
