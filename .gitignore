@@ -1,6 +1,10 @@
+# 프로젝트 디렉터리
+fastapiserver/
+pamo-test/
+
 # Python
-venv/
 __pycache__/
+*.pyc
 *.py[cod]
 *.so
 *.egg
@@ -9,31 +13,36 @@ dist/
 build/
 *.log
 
+# 가상환경
+venv/
+env/
+
 # FastAPI / Uvicorn
 *.db
 instance/
 *.sqlite3
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
 
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
 
-# VSCode
-.vscode/
-*.code-workspace
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# Jupyter Notebooks (있을 경우)
+# Jupyter Notebooks
 .ipynb_checkpoints
 
 # Env / Secrets
 .env
 .env.*
-
-# OS Files
-Thumbs.db
-ehthumbs.db
-Desktop.ini
 
 # Node.js
 node_modules/
@@ -41,7 +50,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Output or generated media
+# 생성된 음악 파일
 *.wav
 *.mp3
 *.ogg
