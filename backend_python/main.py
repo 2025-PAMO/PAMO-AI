@@ -1,17 +1,16 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import subprocess
 import tempfile
 import os
 
-# ✅ FastAPI 라우트가 아닌, BytesIO 반환 헬퍼만 import
-from basicmusic_generate.generator import generate_wav  # <-- 여기!
+from basicmusic_generate.generator import generate_music_file  # ✅ 수정됨
 
 app = FastAPI(title="PAMO Backend Python")
 
-# CORS (운영환경에 맞춰 제한 권장)
+# CORS (운영환경에 맞게 제한 권장)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,14 +30,12 @@ async def generate_music(
     file: UploadFile | None = File(None)
 ):
     try:
-        buf = await generate_wav(prompt=prompt, file=file)  # ✅ BytesIO
-        headers = {"Content-Disposition": "attachment; filename=generated_music.wav"}
-        return StreamingResponse(buf, media_type="audio/wav", headers=headers)
+        output_path = await generate_music_file(file, prompt)
+        return FileResponse(output_path, media_type="audio/wav", filename="generated_music.wav")
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ---------- 썸네일 생성( S3 → 추출 → S3 업로드 ) ----------
-
 class ThumbReq(BaseModel):
     s3_bucket: str
     s3_key: str
