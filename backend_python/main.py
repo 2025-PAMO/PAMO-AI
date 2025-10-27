@@ -7,8 +7,11 @@ import tempfile
 import os
 
 from basicmusic_generate.generator import generate_music_file  # ✅ 수정됨
+from backend_python.api.motion_router import router as motion_router
 
 app = FastAPI(title="PAMO Backend Python")
+
+app.include_router(motion_router, prefix="/api")
 
 # CORS (운영환경에 맞게 제한 권장)
 app.add_middleware(
