@@ -28,7 +28,7 @@ pip install -r requirements.txt
 
 ```bash
 # 기본 실행 (자동 리로드)
-uvicorn backend_python.main:app --reload --host 0.0.0.0 --port 8001
+uvicorn backend_python.main:app --reload --host 0.0.0.0 --port 8000
 
 ```
 
