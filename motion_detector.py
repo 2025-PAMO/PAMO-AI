@@ -1,27 +1,28 @@
-# motion_detector.py
-# - 프론트 연동 그대로: MotionDetector.detect(frame_rgb) -> set[str]
-# - 내부는 MediaPipe Tasks GestureRecognizer(7제스처) 사용
-# - 전역 1초 쓰로틀 + 이벤트별 쿨다운 유지
-# - 반환 문자열 포맷: "event_key, desc" (기존과 동일)
-
 from __future__ import annotations
 import time
 import os
-from typing import Set, Optional
-
+from typing import Set
 import numpy as np
 import mediapipe as mp
+import tensorflow as tf
+import cv2
 
-# ===== 설정 기본값 =====
-# ⚠️ 항상 motion_detector.py 파일이 있는 디렉토리 기준으로 .task 파일 찾음
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(__file__), "gesture_recognizer.task")
-DEFAULT_CONF_THRESH = 0.65
-DEFAULT_COOLDOWN_FRAMES = 18          # ≈0.6s@30fps
+# ===== 설정 =====
+BASE_DIR = os.path.dirname(__file__)
+
+# FastAPI 배포용 — 고정 경로 (최종 모델만 로드)
+CUSTOM_MODEL_PATH = os.path.join(
+    BASE_DIR, "gesture-recognition", "models", "final", "pamo_static_7gesture_2.h5"
+)
+
+DEFAULT_CONF_THRESH = 0.65   # MediaPipe 기본 제스처 임계값
+HEART_CONF_THRESH = 0.85     # 하트 모델은 더 빡세게
+HEART_MARGIN_THRESH = 0.2    # 하트 1등-2등 확률 차이 최소
+DEFAULT_COOLDOWN_FRAMES = 18
 DEFAULT_FPS_ESTIMATE = 30
-DEFAULT_THROTTLE_SECONDS = 1.0        # 1초에 1건만 이벤트 허용
-DEFAULT_IGNORE_LABELS = {"None"}      # 노이즈 라벨 무시
+DEFAULT_THROTTLE_SECONDS = 1.0
 
-# MediaPipe Tasks 단축
+# MediaPipe 단축
 BaseOptions = mp.tasks.BaseOptions
 GestureRecognizer = mp.tasks.vision.GestureRecognizer
 GestureRecognizerOptions = mp.tasks.vision.GestureRecognizerOptions
@@ -29,63 +30,53 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 
 
 class MotionDetector:
-    """
-    프론트 호환 클래스:
-      - __init__(...) 파라미터로 임계/쿨다운/모델 경로 설정 가능
-      - detect(frame_rgb: np.ndarray) -> Set[str]
-        * 이벤트가 있으면 {"event_key, desc"} 한 개 반환 (기존 규약과 동일)
-        * 없으면 빈 set()
-    """
-
-    def __init__(
-        self,
-        model_path: str = DEFAULT_MODEL_PATH,
-        conf_thresh: float = DEFAULT_CONF_THRESH,
-        cooldown_frames: int = DEFAULT_COOLDOWN_FRAMES,
-        fps_estimate: int = DEFAULT_FPS_ESTIMATE,
-        throttle_seconds: float = DEFAULT_THROTTLE_SECONDS,
-        ignore_labels: Optional[Set[str]] = None,
-    ):
-        self.model_path = model_path
-        self.conf_thresh = conf_thresh
-        self.cooldown_frames = cooldown_frames
-        self.fps_estimate = max(int(fps_estimate), 1)
-        self.throttle_seconds = float(throttle_seconds)
-        self.ignore_labels = set(ignore_labels) if ignore_labels is not None else set(DEFAULT_IGNORE_LABELS)
-
-        # GestureRecognizer 초기화
+    def __init__(self):
+        # MediaPipe 기본 제스처 인식기
         options = GestureRecognizerOptions(
-            base_options=BaseOptions(model_asset_path=self.model_path),
+            base_options=BaseOptions(
+                model_asset_path=os.path.join(BASE_DIR, "gesture_recognizer.task")
+            ),
             running_mode=VisionRunningMode.VIDEO,
         )
         self.recognizer = GestureRecognizer.create_from_options(options)
 
-        # 상태값
-        self.frame_idx = 0
-        self.cooldowns = {}           # event_key -> 남은 프레임 수
-        self.last_event_key = None    # 연속 동일 이벤트 방지
-        self.last_emit_time = 0.0     # 전역 쓰로틀(초)
+        # 커스텀 모델 (최종)
+        self.heart_model = tf.keras.models.load_model(CUSTOM_MODEL_PATH)
+        self.heart_actions = ["FingerHeart", "TwoHandHeart", "WingHeart"]
 
-        # 라벨 → (이벤트키, 설명) 매핑 (7제스처 균형 배치)
+        # MediaPipe Hands (커스텀 모델 feature 추출용)
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5
+        )
+
+        # 상태값 초기화
+        self.frame_idx = 0
+        self.cooldowns = {}
+        self.last_event_key = None
+        self.last_emit_time = 0.0
+        self.heart_streak = {"label": None, "count": 0}
+
+        # ✅ 프론트와 연동되는 이벤트 매핑
         self.DJ_MAP = {
-            "Open_Palm":   ("speed_up",        "+5%"),
-            "Closed_Fist": ("speed_down",      "-5%"),
-            "Pointing_Up": ("tap_tempo",       "tap"),
-            "Thumb_Up":    ("pitch_up",        "+1st"),
-            "Thumb_Down":  ("pitch_down",      "-1st"),
-            "Victory":     ("chord_toggle",    "latch"),
-            "ILoveYou":    ("fx_macro_toggle", "toggle"),
+            "Thumb_Down": ("pitch_down", "포인팅 다운"),
+            "Thumb_Up": ("pitch_up", "포인팅 업"),
+            "Open_Palm": ("speed_up", "손바닥 펴기"),
+            "Closed_Fist": ("speed_down", "주먹 쥐기"),
+            "Victory": ("reverb_toggle", "브이 포즈"),
+            "ILoveYou": ("fx_macro_toggle", "손가락 하트"),
+            "Heart": ("chord_toggle", "두손 하트"),  # BigHeart 대체
         }
 
     # ---------- 내부 유틸 ----------
     def _timestamp_ms(self) -> int:
-        ts = int((self.frame_idx / self.fps_estimate) * 1000)
+        ts = int((self.frame_idx / DEFAULT_FPS_ESTIMATE) * 1000)
         self.frame_idx += 1
         return ts
 
     def _can_emit_now(self) -> bool:
         now = time.monotonic()
-        if (now - self.last_emit_time) >= self.throttle_seconds:
+        if (now - self.last_emit_time) >= DEFAULT_THROTTLE_SECONDS:
             self.last_emit_time = now
             return True
         return False
@@ -103,38 +94,88 @@ class MotionDetector:
             else:
                 del self.cooldowns[k]
 
-    # ---------- 외부 인터페이스 ----------
+    # ---------- 메인 ----------
     def detect(self, frame_rgb: np.ndarray) -> Set[str]:
         events: Set[str] = set()
+        current_event_key, desc = None, None
 
         if frame_rgb is None or getattr(frame_rgb, "size", 0) == 0:
             self._decay_cooldowns()
             return events
 
-        if frame_rgb.dtype != np.uint8:
-            frame_rgb = frame_rgb.astype(np.uint8)
-
+        # 1️⃣ 기본 MediaPipe 제스처 인식
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         result = self.recognizer.recognize_for_video(mp_image, self._timestamp_ms())
-
         if result.gestures:
             top = result.gestures[0][0]
-            label = top.category_name
-            score = top.score
+            if top.category_name in self.DJ_MAP and top.score >= DEFAULT_CONF_THRESH:
+                current_event_key, desc = self.DJ_MAP[top.category_name]
 
-            if label not in self.ignore_labels and score >= self.conf_thresh:
-                if label in self.DJ_MAP:
-                    event_key, desc = self.DJ_MAP[label]
-                    if self._can_emit_now() and not self._cooling(event_key) and event_key != self.last_event_key:
-                        self.cooldowns[event_key] = self.cooldown_frames
-                        self.last_event_key = event_key
-                        events.add(f"{event_key}, {desc}")
-                        self._decay_cooldowns()
-                        return events
+        # 2️⃣ fallback (커스텀 모델)
+        if current_event_key is None:
+            hand_result = self.hands.process(frame_rgb)
+            all_joints = []
+            if hand_result.multi_hand_landmarks:
+                for res in hand_result.multi_hand_landmarks:
+                    joint = np.zeros((21, 4))
+                    for j, lm in enumerate(res.landmark):
+                        joint[j] = [lm.x, lm.y, lm.z, lm.visibility]
+                    all_joints.append(joint.flatten())
+
+            if all_joints:
+                if len(all_joints) == 2:
+                    sample = np.concatenate([all_joints[0], all_joints[1]])
+                else:
+                    zeros = np.zeros(21 * 4)
+                    sample = np.concatenate([all_joints[0], zeros])
+
+                sample = sample.reshape(1, -1)
+                pred = self.heart_model.predict(sample, verbose=0)[0]
+                class_id = int(np.argmax(pred))
+                confidence = pred[class_id]
+
+                if confidence >= HEART_CONF_THRESH:
+                    label = self.heart_actions[class_id]
+                    if self.heart_streak["label"] == label:
+                        self.heart_streak["count"] += 1
+                    else:
+                        self.heart_streak = {"label": label, "count": 1}
+
+                    if self.heart_streak["count"] >= 2 and label in self.DJ_MAP:
+                        current_event_key, desc = self.DJ_MAP[label]
+
+        # 3️⃣ 이벤트 발생
+        if current_event_key and self._can_emit_now() and not self._cooling(current_event_key):
+            self.cooldowns[current_event_key] = DEFAULT_COOLDOWN_FRAMES
+            self.last_event_key = current_event_key
+            events.add(f"{current_event_key}, {desc}")
 
         self._decay_cooldowns()
         return events
 
 
+# ==== 테스트용 ====
 if __name__ == "__main__":
-    print("[INFO] MotionDetector class is ready. Import this in your frontend loop.")
+    print("[INFO] MotionDetector ready ✅")
+
+    cap = cv2.VideoCapture(0)
+    detector = MotionDetector()
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame = cv2.flip(frame, 1)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        events = detector.detect(frame_rgb)
+        for e in events:
+            print("[EVENT]", e)
+
+        cv2.imshow("MotionDetector Test", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
