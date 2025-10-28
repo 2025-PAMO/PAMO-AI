@@ -1,179 +1,179 @@
 from __future__ import annotations
-import time
 import os
+import time
 from typing import Set
+import cv2
 import numpy as np
 import mediapipe as mp
-import tensorflow as tf
-import cv2
+from keras.models import load_model
+from collections import deque
+from pathlib import Path
 
-# ===== 설정 =====
-BASE_DIR = os.path.dirname(__file__)
+# =========================================================
+# 설정
+# =========================================================
+BASE_DIR = Path(__file__).parent.resolve()
+MODEL_PATH = BASE_DIR / "pamo_static_7gesture_2.h5"
 
-# FastAPI 배포용 — 고정 경로 (최종 모델만 로드)
-CUSTOM_MODEL_PATH = os.path.join(
-    BASE_DIR, "gesture-recognition", "models", "final", "pamo_static_7gesture_2.h5"
+# 모델 로드
+model = load_model(MODEL_PATH)
+GESTURES = [
+    "PointingDown", "PointingUp", "OpenPalm",
+    "ClosedFist", "Victory", "SmallHeart", "BigHeart"
+]
+
+# MediaPipe Hands 초기화
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(
+    max_num_hands=2,
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
 )
 
-DEFAULT_CONF_THRESH = 0.65   # MediaPipe 기본 제스처 임계값
-HEART_CONF_THRESH = 0.85     # 하트 모델은 더 빡세게
-HEART_MARGIN_THRESH = 0.2    # 하트 1등-2등 확률 차이 최소
-DEFAULT_COOLDOWN_FRAMES = 18
-DEFAULT_FPS_ESTIMATE = 30
-DEFAULT_THROTTLE_SECONDS = 1.0
+# =========================================================
+# 유틸 함수
+# =========================================================
+def count_fingers(landmarks):
+    """손가락 개수 계산"""
+    tips = [8, 12, 16, 20]
+    mcp = [5, 9, 13, 17]
+    cnt = 0
+    for t, m in zip(tips, mcp):
+        if landmarks[t].y < landmarks[m].y:
+            cnt += 1
+    return cnt
 
-# MediaPipe 단축
-BaseOptions = mp.tasks.BaseOptions
-GestureRecognizer = mp.tasks.vision.GestureRecognizer
-GestureRecognizerOptions = mp.tasks.vision.GestureRecognizerOptions
-VisionRunningMode = mp.tasks.vision.RunningMode
 
-
+# =========================================================
+# MotionDetector 클래스
+# =========================================================
 class MotionDetector:
     def __init__(self):
-        # MediaPipe 기본 제스처 인식기
-        options = GestureRecognizerOptions(
-            base_options=BaseOptions(
-                model_asset_path=os.path.join(BASE_DIR, "gesture_recognizer.task")
-            ),
-            running_mode=VisionRunningMode.VIDEO,
-        )
-        self.recognizer = GestureRecognizer.create_from_options(options)
-
-        # 커스텀 모델 (최종)
-        self.heart_model = tf.keras.models.load_model(CUSTOM_MODEL_PATH)
-        self.heart_actions = ["FingerHeart", "TwoHandHeart", "WingHeart"]
-
-        # MediaPipe Hands (커스텀 모델 feature 추출용)
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5
-        )
-
-        # 상태값 초기화
-        self.frame_idx = 0
+        self.prev_label = None
+        self.cooldown = 0
         self.cooldowns = {}
-        self.last_event_key = None
-        self.last_emit_time = 0.0
-        self.heart_streak = {"label": None, "count": 0}
+        self.frame_idx = 0
+        self.last_emit_time = 0
+        self.recent_preds = deque(maxlen=5)
 
-        # ✅ 프론트와 연동되는 이벤트 매핑
+        # 쓰로틀/쿨다운 설정
+        self.THROTTLE_SEC = 1.0
+        self.COOLDOWN_FRAMES = 30
+
+        # 이벤트 매핑
         self.DJ_MAP = {
-            "Thumb_Down": ("pitch_down", "포인팅 다운"),
-            "Thumb_Up": ("pitch_up", "포인팅 업"),
-            "Open_Palm": ("speed_up", "손바닥 펴기"),
-            "Closed_Fist": ("speed_down", "주먹 쥐기"),
+            "PointingDown": ("pitch_down", "포인팅 다운"),
+            "PointingUp": ("pitch_up", "포인팅 업"),
+            "OpenPalm": ("speed_up", "손바닥 펴기"),
+            "ClosedFist": ("speed_down", "주먹 쥐기"),
             "Victory": ("reverb_toggle", "브이 포즈"),
-            "ILoveYou": ("fx_macro_toggle", "손가락 하트"),
-            "Heart": ("chord_toggle", "두손 하트"),  # BigHeart 대체
+            "SmallHeart": ("fx_macro_toggle", "손가락 하트"),
+            "BigHeart": ("chord_toggle", "두손 하트"),
         }
 
-    # ---------- 내부 유틸 ----------
-    def _timestamp_ms(self) -> int:
-        ts = int((self.frame_idx / DEFAULT_FPS_ESTIMATE) * 1000)
-        self.frame_idx += 1
-        return ts
-
-    def _can_emit_now(self) -> bool:
+    # ----------------------------------------
+    # 내부 유틸
+    # ----------------------------------------
+    def _can_emit(self):
         now = time.monotonic()
-        if (now - self.last_emit_time) >= DEFAULT_THROTTLE_SECONDS:
+        if now - self.last_emit_time >= self.THROTTLE_SEC:
             self.last_emit_time = now
             return True
         return False
 
-    def _cooling(self, key: str) -> bool:
-        if key in self.cooldowns and self.cooldowns[key] > 0:
-            self.cooldowns[key] -= 1
-            return True
-        return False
-
-    def _decay_cooldowns(self):
-        for k in list(self.cooldowns.keys()):
-            if self.cooldowns[k] > 0:
-                self.cooldowns[k] -= 1
-            else:
-                del self.cooldowns[k]
-
-    # ---------- 메인 ----------
+    # ----------------------------------------
+    # 메인 함수
+    # ----------------------------------------
     def detect(self, frame_rgb: np.ndarray) -> Set[str]:
-        events: Set[str] = set()
-        current_event_key, desc = None, None
+        """프레임 입력 → 이벤트 세트 반환"""
+        events = set()
+        current_label = None
+        finger_count = 0
 
         if frame_rgb is None or getattr(frame_rgb, "size", 0) == 0:
-            self._decay_cooldowns()
             return events
 
-        # 1️⃣ 기본 MediaPipe 제스처 인식
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        result = self.recognizer.recognize_for_video(mp_image, self._timestamp_ms())
-        if result.gestures:
-            top = result.gestures[0][0]
-            if top.category_name in self.DJ_MAP and top.score >= DEFAULT_CONF_THRESH:
-                current_event_key, desc = self.DJ_MAP[top.category_name]
-
-        # 2️⃣ fallback (커스텀 모델)
-        if current_event_key is None:
-            hand_result = self.hands.process(frame_rgb)
+        result = hands.process(frame_rgb)
+        if result.multi_hand_landmarks:
             all_joints = []
-            if hand_result.multi_hand_landmarks:
-                for res in hand_result.multi_hand_landmarks:
-                    joint = np.zeros((21, 4))
-                    for j, lm in enumerate(res.landmark):
-                        joint[j] = [lm.x, lm.y, lm.z, lm.visibility]
-                    all_joints.append(joint.flatten())
+            for res in result.multi_hand_landmarks:
+                joint = np.zeros((21, 4), dtype=np.float32)
+                for j, lm in enumerate(res.landmark):
+                    joint[j] = [lm.x, lm.y, lm.z, 1.0]  
+                all_joints.append(joint.flatten())
 
-            if all_joints:
-                if len(all_joints) == 2:
-                    sample = np.concatenate([all_joints[0], all_joints[1]])
-                else:
-                    zeros = np.zeros(21 * 4)
-                    sample = np.concatenate([all_joints[0], zeros])
+                # 손가락 개수 계산 (한 손 기준)
+                if not finger_count:
+                    finger_count = count_fingers(res.landmark)
 
+            # 좌표 병합
+            if len(all_joints) == 2:
+                sample = np.concatenate([all_joints[0], all_joints[1]])
+            elif len(all_joints) == 1:
+                zeros = np.zeros(21 * 4, dtype=np.float32)
+                sample = sample.reshape(1, -1).astype(np.float32, copy=False)       
+            else:
+                sample = None
+
+            if sample is not None:
                 sample = sample.reshape(1, -1)
-                pred = self.heart_model.predict(sample, verbose=0)[0]
-                class_id = int(np.argmax(pred))
-                confidence = pred[class_id]
+                probs = model.predict(sample, verbose=0)[0]
+                sorted_probs = np.sort(probs)
+                top1, top2 = sorted_probs[-1], sorted_probs[-2]
+                label = int(np.argmax(probs))
 
-                if confidence >= HEART_CONF_THRESH:
-                    label = self.heart_actions[class_id]
-                    if self.heart_streak["label"] == label:
-                        self.heart_streak["count"] += 1
-                    else:
-                        self.heart_streak = {"label": label, "count": 1}
+                # 확신도 및 margin 필터
+                if top1 > 0.9 and (top1 - top2) > 0.25:
+                    self.recent_preds.append(label)
 
-                    if self.heart_streak["count"] >= 2 and label in self.DJ_MAP:
-                        current_event_key, desc = self.DJ_MAP[label]
+                # 스무딩 (5프레임 중 3프레임 이상 동일)
+                if len(self.recent_preds) == 5 and self.recent_preds.count(label) >= 3:
+                    current_label = GESTURES[label]
+                else:
+                    current_label = None
 
-        # 3️⃣ 이벤트 발생
-        if current_event_key and self._can_emit_now() and not self._cooling(current_event_key):
-            self.cooldowns[current_event_key] = DEFAULT_COOLDOWN_FRAMES
-            self.last_event_key = current_event_key
-            events.add(f"{current_event_key}, {desc}")
+                # 손가락 개수 기반 보정
+                if current_label == "Victory" and finger_count != 2:
+                    current_label = None
+                elif current_label == "OpenPalm" and finger_count < 4:
+                    current_label = None
+                elif current_label == "ClosedFist" and finger_count > 1:
+                    current_label = None
 
-        self._decay_cooldowns()
+        # 쿨다운 및 이벤트 발생
+        if self.cooldown > 0:
+            self.cooldown -= 1
+        elif current_label and self._can_emit() and current_label != self.prev_label:
+            if current_label in self.DJ_MAP:
+                key, desc = self.DJ_MAP[current_label]
+                events.add(f"{key}, {desc}")
+                self.prev_label = current_label
+                self.cooldown = self.COOLDOWN_FRAMES
+
         return events
 
 
-# ==== 테스트용 ====
+# =========================================================
+# 테스트 실행
+# =========================================================
 if __name__ == "__main__":
-    print("[INFO] MotionDetector ready ✅")
-
+    print("[INFO] MotionDetector 커스텀 모델 전용 버전 ✅")
     cap = cv2.VideoCapture(0)
     detector = MotionDetector()
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
-            break
+            continue
 
         frame = cv2.flip(frame, 1)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        events = detector.detect(rgb)
 
-        events = detector.detect(frame_rgb)
         for e in events:
             print("[EVENT]", e)
 
-        cv2.imshow("MotionDetector Test", frame)
+        cv2.imshow("MotionDetector (Custom)", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
