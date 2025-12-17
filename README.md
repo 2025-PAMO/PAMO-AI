@@ -1,6 +1,6 @@
 # 🎵 PAMO (AI Motion-based Music Generation)
 
-<div><img src="./image/MAIN01.png" width="800px;" alt="PAMO Main"/></div>
+<div><img src="./images/001.jpg" width="800px;" alt="PAMO Main"/></div>
 
 # 😀 백엔드 팀원 및 역할
 
@@ -13,6 +13,8 @@
 
 
 ## 1. AI 개요
+<div><img src="./images/008.jpg" width="800px;" alt="MusicGen Pipeline"/></div>
+<div><img src="./images/009.jpg" width="800px;" alt="MediaPipe Detection"/></div>
 
 - 사용자의 **실시간 손동작(Motion)**과 **음성 피치(Pitch)** 데이터를 활용하여
 **MediaPipe + MusicGen + Tone.js 파이프라인**으로 직관적인 음악 창작 AI 구축
@@ -34,7 +36,8 @@
 
 ## 📘 3-1. 피치 조건부 음악 생성 (MusicGen)
 
-<div><img src="./image/MUSICGEN01.png" width="800px;" alt="MusicGen Pipeline"/></div>
+<div><img src="./images/016.jpg" width="800px;" alt="MusicGen Pipeline"/></div>
+<div><img src="./images/017.jpg" width="800px;" alt="MusicGen Pipeline"/></div>
 
 - **Pitch-to-Text Prompting:** 오디오의 피치 패턴을 분석하여 `C4 D4 E4`와 같은 음표 시퀀스로 변환
 - **Conditional Generation:** `melody: [음표 시퀀스] style: [분위기]` 형태의 프롬프트를 MusicGen 모델에 입력
@@ -42,15 +45,14 @@
 
 ## 🔍 3-2. 실시간 모션 인식 (MediaPipe Hands)
 
-<div><img src="./image/MEDIAPIPE01.png" width="800px;" alt="MediaPipe Detection"/></div>
+<div><img src="./images/018.jpg" width="800px;" alt="MediaPipe Detection"/></div>
+<div><img src="./images/019.jpg" width="800px;" alt="MediaPipe Detection"/></div>
 
 - **Landmark Extraction:** 손의 21개 관절 위치를 (x, y, z) 좌표로 실시간 추출
 - **Gesture Mapping:** 자체 수집한 7가지 핵심 제스처(PointingUp/Down, OpenPalm 등) 데이터셋으로 인식 정확도 극대화
 - **Real-time Control:** 손의 위치(y축)로 음 높이를 조절하고, 제스처를 통해 드럼 비트 추가나 리버브 효과 적용
 
 ## 🎧 3-3. 실시간 인터랙션 & 오디오 엔진
-
-<div><img src="./image/AUDIO01.png" width="800px;" alt="Audio Interaction Flow"/></div>
 
 - **Web Audio Pipeline:** 브라우저 내에서 딜레이 없는 실시간 오디오 변형 환경 구축
 - **Speed & Pitch Control:** AI가 생성한 소스 음악의 재생 속도와 피치를 모션 데이터와 동기화
