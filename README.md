@@ -16,7 +16,7 @@
 <div><img src="./images/008.jpg" width="800px;" alt="MusicGen Pipeline"/></div>
 <div><img src="./images/009.jpg" width="800px;" alt="MediaPipe Detection"/></div>
 
-- 사용자의 **실시간 손동작(Motion)**과 **음성 피치(Pitch)** 데이터를 활용하여
+- 사용자의 실시간 손동작(Motion)과 음성 피치(Pitch) 데이터를 활용하여
 **MediaPipe + MusicGen + Tone.js 파이프라인**으로 직관적인 음악 창작 AI 구축
 - 텍스트 프롬프트뿐만 아니라 **사용자의 허밍이나 피치 흐름을 텍스트로 변환**하여
 음악 모델에 주입함으로써 개인화된 멜로디 생성 가능
